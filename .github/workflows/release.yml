@@ -1,0 +1,189 @@
+name: Release Suvio plugins
+
+on:
+  workflow_call:
+    inputs:
+      workflow-revision:
+        description: Full plugin-workflows commit; pin the caller to the same commit
+        required: true
+        type: string
+      runner:
+        description: JSON runs-on object for the caller's existing runner pool
+        required: true
+        type: string
+      gradle-tasks:
+        description: JSON array of Gradle task names including check
+        default: '["check", "packageSuvioPlugin"]'
+        type: string
+      packages:
+        description: JSON array of name, file and tagPrefix; identity comes from the package
+        required: true
+        type: string
+      tag:
+        default: ''
+        type: string
+      plugins:
+        description: all, tag (matching the tag prefix), or comma-separated package names
+        default: all
+        type: string
+      submit-to-store:
+        default: false
+        type: boolean
+    secrets:
+      SUVIO_PUBLISH_TOKEN:
+        required: false
+      SUVIO_SIGNING_PRIVATE_KEY:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ${{ fromJSON(inputs.runner) }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ShinudaCommunity/plugin-workflows
+          ref: ${{ inputs.workflow-revision }}
+          path: .release-tools
+          persist-credentials: false
+      - uses: ./.release-tools/actions/build
+        with:
+          source-ref: ${{ github.sha }}
+          gradle-tasks: ${{ inputs.gradle-tasks }}
+          packages: ${{ inputs.packages }}
+
+  build:
+    if: (github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/'))
+    runs-on: ${{ fromJSON(inputs.runner) }}
+    permissions:
+      contents: write
+    timeout-minutes: 60
+    outputs:
+      matrix: ${{ steps.candidates.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ShinudaCommunity/plugin-workflows
+          ref: ${{ inputs.workflow-revision }}
+          path: .release-tools
+          persist-credentials: false
+      - uses: ./.release-tools/actions/build
+        id: build
+        with:
+          source-ref: ${{ inputs.tag }}
+          tag: ${{ inputs.tag }}
+          plugins: ${{ inputs.plugins }}
+          gradle-tasks: ${{ inputs.gradle-tasks }}
+          packages: ${{ inputs.packages }}
+      - name: Retain verified candidates in a draft release
+        id: candidates
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          RELEASE_EVIDENCE: ${{ steps.build.outputs.evidence }}
+        with:
+          script: |
+            try {
+              const release = require('./.release-tools/tools/release.cjs');
+              const evidence = await release.uploadCandidates({ github, context, root: 'source',
+                evidence: JSON.parse(process.env.RELEASE_EVIDENCE), runId: context.runId, attempt: process.env.GITHUB_RUN_ATTEMPT });
+              core.setOutput('matrix', JSON.stringify(release.publicationMatrix(evidence)));
+              await core.summary.addRaw('Verified candidates retained in a draft release. Store approval is still required.\n').write();
+            } catch {
+              core.setFailed('Candidate verification or transfer failed. No Store submission was performed.');
+            }
+
+  submit:
+    name: Submit ${{ matrix.plugin }}
+    needs: build
+    if: inputs.submit-to-store && (github.event_name == 'workflow_dispatch' || github.event_name == 'push')
+    runs-on: ${{ fromJSON(inputs.runner) }}
+    # GitHub requires push access to download assets from private draft releases.
+    permissions:
+      contents: write
+    environment: suvio-plugin-publisher
+    timeout-minutes: 20
+    concurrency:
+      group: suvio-store-${{ github.repository }}-${{ matrix.plugin-id }}-${{ matrix.version }}
+      cancel-in-progress: false
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix: ${{ fromJSON(needs.build.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ShinudaCommunity/plugin-workflows
+          ref: ${{ inputs.workflow-revision }}
+          path: .release-tools
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify the reviewed tooling revision
+        env:
+          WORKFLOW_REVISION: ${{ inputs.workflow-revision }}
+        run: |
+          set -euo pipefail
+          [[ "$WORKFLOW_REVISION" =~ ^[a-f0-9]{40}$ ]]
+          test "$(git -C .release-tools rev-parse HEAD)" = "$WORKFLOW_REVISION"
+          git -C .release-tools merge-base --is-ancestor HEAD origin/main
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: source
+          persist-credentials: false
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: '25'
+      - name: Install the published SDK publisher without release credentials
+        run: source/gradlew --project-dir .release-tools/publisher installDist --no-daemon --no-configuration-cache --max-workers=2
+      - name: Download the exact verified candidate
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          CANDIDATE_ASSET_ID: ${{ matrix.asset-id }}
+          CANDIDATE_SHA256: ${{ matrix.sha256 }}
+          CANDIDATE_NAME: ${{ matrix.asset-name }}
+        with:
+          script: |
+            try {
+              const release = require('./.release-tools/tools/release.cjs');
+              await release.downloadCandidate({ github, context, assetId: process.env.CANDIDATE_ASSET_ID,
+                sha256: process.env.CANDIDATE_SHA256, name: process.env.CANDIDATE_NAME,
+                destination: `${process.env.RUNNER_TEMP}/candidate.suvio` });
+            } catch {
+              core.setFailed('Candidate download or checksum verification failed.');
+            }
+      - name: Sign and submit with the SDK publisher
+        id: publish
+        env:
+          INPUT_PACKAGE: ${{ runner.temp }}/candidate.suvio
+          INPUT_PLUGIN_ID: ${{ matrix.plugin-id }}
+          INPUT_VERSION: ${{ matrix.version }}
+          INPUT_STORE_URL: ${{ vars.SUVIO_STORE_URL }}
+          INPUT_SIGNING_KEY_ID: ${{ vars.SUVIO_SIGNING_KEY_ID }}
+          SUVIO_PUBLISH_TOKEN: ${{ secrets.SUVIO_PUBLISH_TOKEN }}
+          SUVIO_SIGNING_PRIVATE_KEY: ${{ secrets.SUVIO_SIGNING_PRIVATE_KEY }}
+        run: java -cp '.release-tools/publisher/build/install/suvio-plugin-publisher/lib/*' cc.suviomedia.suvio.publisher.PublisherCliKt github
+      - name: Record submission result
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          PLUGIN_ID: ${{ matrix.plugin-id }}
+          PLUGIN_VERSION: ${{ matrix.version }}
+          RELEASE_STATUS: ${{ steps.publish.outputs.status }}
+          CONSOLE_URL: ${{ vars.SUVIO_CONSOLE_URL }}
+        with:
+          script: |
+            const status = process.env.RELEASE_STATUS;
+            if (!['PENDING_REVIEW', 'APPROVED'].includes(status)) return core.setFailed('Unexpected release status.');
+            core.summary.addRaw(`${process.env.PLUGIN_ID} ${process.env.PLUGIN_VERSION}: ${status}\n`);
+            if (process.env.CONSOLE_URL) {
+              try {
+                const url = new URL(process.env.CONSOLE_URL);
+                if (url.protocol === 'https:' && !url.username && !url.password && !url.search && !url.hash)
+                  core.summary.addLink('Open developer console', url.href);
+              } catch { /* An optional Console link must not change a successful submission. */ }
+            }
+            await core.summary.write();

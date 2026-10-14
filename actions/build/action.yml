@@ -1,0 +1,111 @@
+name: Verify Suvio release candidates
+description: Test and package plugins using the published SDK without publisher credentials
+inputs:
+  source-ref:
+    description: Source commit or annotated release tag
+    required: true
+  gradle-tasks:
+    description: JSON array of Gradle task names including check
+    required: true
+  packages:
+    description: JSON array of name, file and tagPrefix
+    required: true
+  tag:
+    description: Release tag; empty for PR checks
+    default: ''
+  plugins:
+    description: all, tag, or comma-separated package names
+    default: all
+outputs:
+  evidence:
+    description: Public package identities, paths and checksums
+    value: ${{ steps.candidates.outputs.evidence }}
+runs:
+  using: composite
+  steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        ref: ${{ inputs.source-ref }}
+        path: source
+        fetch-depth: 0
+        persist-credentials: false
+    - name: Verify source and release configuration
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+      env:
+        RELEASE_TAG: ${{ inputs.tag }}
+        SELECTED_PLUGINS: ${{ inputs.plugins }}
+        GRADLE_TASKS: ${{ inputs.gradle-tasks }}
+        PACKAGES: ${{ inputs.packages }}
+      with:
+        script: |
+          const release = require('./.release-tools/tools/release.cjs');
+          const config = release.validateConfig({ schemaVersion: 1,
+            tasks: JSON.parse(process.env.GRADLE_TASKS), packages: JSON.parse(process.env.PACKAGES) });
+          release.selectedNames(config, process.env.SELECTED_PLUGINS, process.env.RELEASE_TAG);
+          if (process.env.RELEASE_TAG) {
+            release.verifyTag('source', process.env.RELEASE_TAG, context.payload.repository.default_branch);
+          } else if (context.eventName !== 'pull_request') throw new Error('A release tag is required.');
+    - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+      with:
+        distribution: temurin
+        java-version: '25'
+    - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+      with:
+        node-version: '24'
+    - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ~/.gradle/wrapper/dists
+          ~/.gradle/caches/modules-2
+          ~/.gradle/caches/build-cache-1
+          ~/.gradle/caches/*/generated-gradle-jars
+          ~/.gradle/caches/*/kotlin-dsl
+        key: suvio-plugin-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('source/settings.gradle.kts', 'source/**/build.gradle.kts', 'source/gradle/wrapper/gradle-wrapper.properties') }}
+    - name: Install Linux x64 build prerequisites
+      shell: bash
+      run: |
+        set -euo pipefail
+        sudo apt-get -o Acquire::Retries=2 -o Acquire::https::Timeout=15 -o APT::Update::Error-Mode=any update
+        sudo apt-get install --yes --no-install-recommends -o Acquire::Retries=2 -o Acquire::https::Timeout=15 xz-utils libatomic1 unzip
+        archive="$RUNNER_TEMP/wasmtime-c-api.tar.xz"
+        curl --fail --location --output "$archive" https://github.com/bytecodealliance/wasmtime/releases/download/v48.0.5/wasmtime-v48.0.5-x86_64-linux-c-api.tar.xz
+        printf '%s  %s\n' 81fffe5fe895c7f8f84a744f4d4d165dda28793d00ee943ee71fcfb6ab5ed923 "$archive" | sha256sum --check --status
+        mkdir -p "$RUNNER_TEMP/wasmtime-c-api"
+        tar -xJf "$archive" -C "$RUNNER_TEMP/wasmtime-c-api"
+        echo "KRWA_WASMTIME_LIBRARY=$RUNNER_TEMP/wasmtime-c-api/wasmtime-v48.0.5-x86_64-linux-c-api/lib/libwasmtime.so" >> "$GITHUB_ENV"
+    - name: Build and test packages without publisher credentials
+      shell: bash
+      env:
+        GRADLE_TASKS: ${{ inputs.gradle-tasks }}
+        PACKAGES: ${{ inputs.packages }}
+      run: |
+        node <<'JS'
+        const { validateConfig } = require('./.release-tools/tools/release.cjs');
+        const { spawnSync } = require('node:child_process');
+        const config = validateConfig({ schemaVersion: 1,
+          tasks: JSON.parse(process.env.GRADLE_TASKS), packages: JSON.parse(process.env.PACKAGES) });
+        const result = spawnSync('./gradlew', [...config.tasks, '--no-daemon', '--no-configuration-cache', '--max-workers=2',
+          '-Dorg.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=768m', '-Pkotlin.compiler.execution.strategy=in-process'],
+          { cwd: 'source', stdio: 'inherit' });
+        process.exit(result.status ?? 1);
+        JS
+    - name: Read identities from verified V8 packages
+      id: candidates
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+      env:
+        RELEASE_TAG: ${{ inputs.tag }}
+        SELECTED_PLUGINS: ${{ inputs.plugins }}
+        GRADLE_TASKS: ${{ inputs.gradle-tasks }}
+        PACKAGES: ${{ inputs.packages }}
+      with:
+        script: |
+          const release = require('./.release-tools/tools/release.cjs');
+          const { execFileSync } = require('node:child_process');
+          const commit = execFileSync('git', ['-C', 'source', 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+          const config = { schemaVersion: 1, tasks: JSON.parse(process.env.GRADLE_TASKS), packages: JSON.parse(process.env.PACKAGES) };
+          const evidence = await release.collectCandidates({ root: 'source', config, commit,
+            tag: process.env.RELEASE_TAG, selection: process.env.SELECTED_PLUGINS });
+          core.setOutput('evidence', JSON.stringify(evidence));
+          for (const candidate of evidence.candidates)
+            core.summary.addRaw(`${candidate.pluginId} ${candidate.version}: verified candidate\n`);
+          await core.summary.write();
