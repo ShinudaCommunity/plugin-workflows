@@ -7,7 +7,9 @@ It contains no plugin source, SDK source, credentials or deployment configuratio
 
 ## Caller configuration
 
-Pin both `uses` and `workflow-revision` to the same reviewed 40-character commit.
+Use the maintained `v1` branch. Compatible CI updates roll out centrally without
+editing callers. Each run resolves its exact workflow commit from GitHub's run
+metadata and uses that commit for both the build and submission tooling.
 Keep runner labels, Store configuration and publisher credentials in the caller.
 
 ```yaml
@@ -29,11 +31,11 @@ permissions:
 jobs:
   release:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    uses: ShinudaCommunity/plugin-workflows/.github/workflows/release.yml@REVIEWED_COMMIT
+    uses: ShinudaCommunity/plugin-workflows/.github/workflows/release.yml@v1
     permissions:
+      actions: read
       contents: write
     with:
-      workflow-revision: REVIEWED_COMMIT
       runner: ${{ vars.PLUGIN_RELEASE_RUNNER }}
       tag: ${{ github.event_name == 'push' && github.ref_name || inputs.tag || '' }}
       plugins: ${{ github.event_name == 'push' && 'tag' || 'all' }}
@@ -47,6 +49,8 @@ jobs:
 `runner` is a JSON `runs-on` object for an existing Ubuntu/Debian Linux x64 pool.
 The workflow installs the public Wasmtime C API with a pinned checksum. It does
 not fall back to a different runner. Private self-hosted pools never run fork PRs.
+`actions: read` allows reading the resolved workflow revision for this run;
+there is no separate revision input to keep synchronized.
 
 The default Gradle tasks are `["check", "packageSuvioPlugin"]`. Override
 `gradle-tasks` with a JSON array for a multi-project build. Package names, file
@@ -104,9 +108,18 @@ is created.
 
 ## Maintenance
 
-Update the shared workflow once, test it, then update the two pinned commit
-references in callers through PRs. An SDK version bump is not required for CI
-changes. Local checks use Node 24+, a JDK (`jar`) and `unzip`:
+Develop and test changes on `main`, then advance the `v1` branch to the tested
+commit. Keep `v1` compatible with existing callers; use a new major branch such
+as `v2` for incompatible inputs or behavior. Do not create a tag named `v1`,
+because GitHub would prefer it over the branch.
+
+All new runs using `@v1` receive compatible updates without per-repository PRs.
+Runs already started keep their resolved workflow commit, and a retried submit
+uses the same tooling as its original build. Callers may still use a full commit
+SHA in `uses` when they explicitly need a frozen version; no second pin is needed.
+An SDK version bump is not required for CI changes.
+
+Local checks use Node 24+, a JDK (`jar`) and `unzip`:
 
 ```sh
 node --test tools/release.test.mjs

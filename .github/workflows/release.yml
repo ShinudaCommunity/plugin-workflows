@@ -3,10 +3,6 @@ name: Release Suvio plugins
 on:
   workflow_call:
     inputs:
-      workflow-revision:
-        description: Full plugin-workflows commit; pin the caller to the same commit
-        required: true
-        type: string
       runner:
         description: JSON runs-on object for the caller's existing runner pool
         required: true
@@ -36,6 +32,7 @@ on:
         required: false
 
 permissions:
+  actions: read
   contents: read
 
 jobs:
@@ -44,10 +41,25 @@ jobs:
     runs-on: ${{ fromJSON(inputs.runner) }}
     timeout-minutes: 60
     steps:
+      - &resolve-workflow
+        name: Resolve the shared workflow revision
+        id: workflow
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            // Use GitHub's resolved commit even if v1 moves while this run is waiting.
+            const { data } = await github.rest.actions.getWorkflowRunAttempt({ ...context.repo,
+              run_id: context.runId, attempt_number: Number(process.env.GITHUB_RUN_ATTEMPT) });
+            const workflows = (data.referenced_workflows ?? []).filter(workflow =>
+              workflow.path.startsWith('ShinudaCommunity/plugin-workflows/.github/workflows/release.yml@'));
+            if (workflows.length !== 1 || !/^[a-f0-9]{40}$/.test(workflows[0].sha))
+              throw new Error('Cannot resolve the shared workflow revision for this run.');
+            core.setOutput('sha', workflows[0].sha);
+            core.info(`Shared workflow revision: ${workflows[0].sha}`);
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ShinudaCommunity/plugin-workflows
-          ref: ${{ inputs.workflow-revision }}
+          ref: ${{ steps.workflow.outputs.sha }}
           path: .release-tools
           persist-credentials: false
       - uses: ./.release-tools/actions/build
@@ -60,15 +72,18 @@ jobs:
     if: (github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/'))
     runs-on: ${{ fromJSON(inputs.runner) }}
     permissions:
+      actions: read
       contents: write
     timeout-minutes: 60
     outputs:
       matrix: ${{ steps.candidates.outputs.matrix }}
+      workflow-sha: ${{ steps.workflow.outputs.sha }}
     steps:
+      - *resolve-workflow
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ShinudaCommunity/plugin-workflows
-          ref: ${{ inputs.workflow-revision }}
+          ref: ${{ steps.workflow.outputs.sha }}
           path: .release-tools
           persist-credentials: false
       - uses: ./.release-tools/actions/build
@@ -117,13 +132,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ShinudaCommunity/plugin-workflows
-          ref: ${{ inputs.workflow-revision }}
+          ref: ${{ needs.build.outputs.workflow-sha }}
           path: .release-tools
           fetch-depth: 0
           persist-credentials: false
       - name: Verify the reviewed tooling revision
         env:
-          WORKFLOW_REVISION: ${{ inputs.workflow-revision }}
+          WORKFLOW_REVISION: ${{ needs.build.outputs.workflow-sha }}
         run: |
           set -euo pipefail
           [[ "$WORKFLOW_REVISION" =~ ^[a-f0-9]{40}$ ]]
