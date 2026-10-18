@@ -57,6 +57,14 @@ The default Gradle tasks are `["check", "packageSuvioPlugin"]`. Override
 paths and tag prefixes must be unique. IDs and versions come from the built V8
 archives; do not duplicate them in workflow inputs.
 
+Repositories requiring a patched runtime may set `prepare-script` to a checked-in
+Bash script. It replaces the default Linux prerequisite/Wasmtime installation and
+runs from the source checkout after Java and Node setup. Use `GITHUB_ENV` for public
+runtime paths needed by the following Gradle step. An optional `verify-script`
+runs after Gradle and before candidate collection, for example to require executed
+WASI tests without skips. Both scripts run in checks/build jobs without publisher
+credentials; Gradle checks and package validation still run normally.
+
 ## One package or several
 
 List multiple packages in `packages` and use `plugins: all` (default), `tag`
@@ -122,6 +130,6 @@ An SDK version bump is not required for CI changes.
 Local checks use Node 24+, a JDK (`jar`) and `unzip`:
 
 ```sh
-node --test tools/release.test.mjs
+node --test tools/*.test.mjs
 actionlint .github/workflows/release.yml
 ```

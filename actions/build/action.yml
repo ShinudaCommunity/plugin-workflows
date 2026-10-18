@@ -16,6 +16,12 @@ inputs:
   plugins:
     description: all, tag, or comma-separated package names
     default: all
+  prepare-script:
+    description: Optional repository-relative Bash script preparing the build runtime
+    default: ''
+  verify-script:
+    description: Optional repository-relative Bash script verifying extra test evidence
+    default: ''
 outputs:
   evidence:
     description: Public package identities, paths and checksums
@@ -62,6 +68,7 @@ runs:
           ~/.gradle/caches/*/kotlin-dsl
         key: suvio-plugin-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('source/settings.gradle.kts', 'source/**/build.gradle.kts', 'source/gradle/wrapper/gradle-wrapper.properties') }}
     - name: Install Linux x64 build prerequisites
+      if: inputs.prepare-script == ''
       shell: bash
       run: |
         set -euo pipefail
@@ -73,6 +80,12 @@ runs:
         mkdir -p "$RUNNER_TEMP/wasmtime-c-api"
         tar -xJf "$archive" -C "$RUNNER_TEMP/wasmtime-c-api"
         echo "KRWA_WASMTIME_LIBRARY=$RUNNER_TEMP/wasmtime-c-api/wasmtime-v48.0.5-x86_64-linux-c-api/lib/libwasmtime.so" >> "$GITHUB_ENV"
+    - name: Prepare the repository build runtime
+      if: inputs.prepare-script != ''
+      shell: bash
+      env:
+        BUILD_HOOK: ${{ inputs.prepare-script }}
+      run: node .release-tools/tools/build-hook.cjs
     - name: Build and test packages without publisher credentials
       shell: bash
       env:
@@ -89,6 +102,12 @@ runs:
           { cwd: 'source', stdio: 'inherit' });
         process.exit(result.status ?? 1);
         JS
+    - name: Verify the repository test evidence
+      if: inputs.verify-script != ''
+      shell: bash
+      env:
+        BUILD_HOOK: ${{ inputs.verify-script }}
+      run: node .release-tools/tools/build-hook.cjs
     - name: Read identities from verified V8 packages
       id: candidates
       uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
