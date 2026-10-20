@@ -75,11 +75,11 @@ runs:
         sudo apt-get -o Acquire::Retries=2 -o Acquire::https::Timeout=15 -o APT::Update::Error-Mode=any update
         sudo apt-get install --yes --no-install-recommends -o Acquire::Retries=2 -o Acquire::https::Timeout=15 xz-utils libatomic1 unzip
         archive="$RUNNER_TEMP/wasmtime-c-api.tar.xz"
-        curl --fail --location --output "$archive" https://github.com/bytecodealliance/wasmtime/releases/download/v48.0.5/wasmtime-v48.0.5-x86_64-linux-c-api.tar.xz
-        printf '%s  %s\n' 81fffe5fe895c7f8f84a744f4d4d165dda28793d00ee943ee71fcfb6ab5ed923 "$archive" | sha256sum --check --status
+        curl --fail --location --output "$archive" https://github.com/bytecodealliance/wasmtime/releases/download/v48.0.7/wasmtime-v48.0.7-x86_64-linux-c-api.tar.xz
+        printf '%s  %s\n' 3d65ab7a10127632ec6d41f0340866272abd9dab8bc7b9fdc9deaea811ee3719 "$archive" | sha256sum --check --status
         mkdir -p "$RUNNER_TEMP/wasmtime-c-api"
         tar -xJf "$archive" -C "$RUNNER_TEMP/wasmtime-c-api"
-        echo "KRWA_WASMTIME_LIBRARY=$RUNNER_TEMP/wasmtime-c-api/wasmtime-v48.0.5-x86_64-linux-c-api/lib/libwasmtime.so" >> "$GITHUB_ENV"
+        echo "KRWA_WASMTIME_LIBRARY=$RUNNER_TEMP/wasmtime-c-api/wasmtime-v48.0.7-x86_64-linux-c-api/lib/libwasmtime.so" >> "$GITHUB_ENV"
     - name: Prepare the repository build runtime
       if: inputs.prepare-script != ''
       shell: bash
