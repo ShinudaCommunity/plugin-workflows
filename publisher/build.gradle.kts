@@ -3,7 +3,7 @@ plugins { application }
 
 java { toolchain { languageVersion.set(JavaLanguageVersion.of(25)) } }
 
-dependencies { runtimeOnly("cc.suviomedia:plugin-publisher:1.0.0-rc.62") }
+dependencies { runtimeOnly("cc.suviomedia:plugin-publisher:1.0.0-rc.63") }
 
 application {
     mainClass.set("cc.suviomedia.suvio.publisher.PublisherCliKt")
