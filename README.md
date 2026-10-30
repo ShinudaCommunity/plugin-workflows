@@ -104,7 +104,7 @@ secret values manually. Use an ephemeral runner and protected environment rules.
 
 Publisher credentials reach only the final Java process in the submit job.
 Neither plugin Gradle builds nor publisher dependency resolution receives them.
-The publisher is the released `cc.suviomedia:plugin-publisher:1.0.0-rc.64`; it
+The publisher is the released `cc.suviomedia:plugin-publisher:1.0.0-rc.66`; it
 validates and signs the archive using the SDK and submits it for Store review.
 The helper only checks identity and exact candidate transfer, not the SDK's
 signature or package rules.
